@@ -110,23 +110,33 @@ class APPNP(MessagePassing):
 
         h = x
         for _ in range(self.K):
+            # Dropout is drawn afresh from the normalized weights at
+            # every step. Writing it back into `edge_index`/`edge_weight`
+            # would compound the mask instead, so an edge would survive
+            # all `K` steps with probability `(1 - p) ** K` rather than
+            # `1 - p`, and the `1 / (1 - p)` rescaling would stack on
+            # the few survivors:
+            step_edge_index = edge_index
+            step_edge_weight = edge_weight
             if self.dropout > 0 and self.training:
                 if isinstance(edge_index, Tensor):
                     if is_torch_sparse_tensor(edge_index):
-                        _, edge_weight = to_edge_index(edge_index)
-                        edge_weight = F.dropout(edge_weight, p=self.dropout)
-                        edge_index = set_sparse_value(edge_index, edge_weight)
+                        _, value = to_edge_index(edge_index)
+                        value = F.dropout(value, p=self.dropout)
+                        step_edge_index = set_sparse_value(edge_index, value)
                     else:
                         assert edge_weight is not None
-                        edge_weight = F.dropout(edge_weight, p=self.dropout)
+                        step_edge_weight = F.dropout(edge_weight,
+                                                     p=self.dropout)
                 else:
                     value = edge_index.storage.value()
                     assert value is not None
                     value = F.dropout(value, p=self.dropout)
-                    edge_index = edge_index.set_value(value, layout='coo')
+                    step_edge_index = edge_index.set_value(value, layout='coo')
 
             # propagate_type: (x: Tensor, edge_weight: OptTensor)
-            x = self.propagate(edge_index, x=x, edge_weight=edge_weight)
+            x = self.propagate(step_edge_index, x=x,
+                               edge_weight=step_edge_weight)
             x = x * (1 - self.alpha)
             x = x + self.alpha * h
 
